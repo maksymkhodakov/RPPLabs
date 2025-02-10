@@ -1,0 +1,3 @@
+/Users/maksymkhodakov/CLionProjects/RPPLabs/cmake-build-debug/CMakeFiles/RPPLabs.dir
+/Users/maksymkhodakov/CLionProjects/RPPLabs/cmake-build-debug/CMakeFiles/edit_cache.dir
+/Users/maksymkhodakov/CLionProjects/RPPLabs/cmake-build-debug/CMakeFiles/rebuild_cache.dir
