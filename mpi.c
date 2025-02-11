@@ -1,57 +1,133 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <mpi.h>
 #include <math.h>
+#include <mpi.h>
 
-// Функція, яку інтегруємо: f(x)=4/(1+x^2)
-double f(double x) {
-    return 4.0 / (1.0 + x * x);
-}
+#define WIDTH 3000
+#define HEIGHT 3000
+#define MAX_ITER 1000
 
 int main(int argc, char *argv[]) {
     int rank, size;
+    MPI_Init(&argc, &argv);
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-    MPI_Init(&argc, &argv);                   // Ініціалізація MPI
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);       // Отримання рангу процесу
-    MPI_Comm_size(MPI_COMM_WORLD, &size);       // Кількість процесів
+    // Розподіл рядків між процесами
+    int rows_per_proc = HEIGHT / size;
+    int remainder = HEIGHT % size;
+    int start_row, end_row;
+    if (rank < remainder) {
+        start_row = rank * (rows_per_proc + 1);
+        end_row = start_row + rows_per_proc + 1;
+    } else {
+        start_row = rank * rows_per_proc + remainder;
+        end_row = start_row + rows_per_proc;
+    }
+    int local_rows = end_row - start_row;
 
-    // Межі інтегрування
-    double a = 0.0, b = 1.0;
-    // Кількість кроків
-    long long num_steps = 1000000;
-    double step = (b - a) / num_steps;
-    double local_sum = 0.0;
-
-    // Розподіл роботи між процесами
-    long long steps_per_proc = num_steps / size;
-    long long i_start = rank * steps_per_proc;
-    long long i_end = (rank + 1) * steps_per_proc;
-    if (rank == size - 1) {
-        // Останній процес обробляє також і залишок
-        i_end = num_steps;
+    // Виділення пам'яті для локального блоку (масив значень ітерацій)
+    int *local_image = malloc(local_rows * WIDTH * sizeof(int));
+    if (local_image == NULL) {
+        fprintf(stderr, "Процес %d: помилка виділення пам'яті\n", rank);
+        MPI_Abort(MPI_COMM_WORLD, 1);
     }
 
-    double local_a = a + i_start * step;
-    double local_b = a + i_end * step;
-    printf("Процес %d: обробляє інтервал [%.6f, %.6f], індекси [%lld, %lld)\n",
-           rank, local_a, local_b, i_start, i_end);
+    long long local_total = 0;
+    int local_min = MAX_ITER;
+    int local_max = 0;
 
-    // Обчислення локальної суми
-    for (long long i = i_start; i < i_end; i++) {
-        double x = a + i * step;
-        local_sum += f(x);
+    double real_min = -2.0, real_max = 1.0;
+    double imag_min = -1.5, imag_max = 1.5;
+
+    double start_time = MPI_Wtime();
+
+    // Обчислення локального блоку
+    for (int i = 0; i < local_rows; i++) {
+        int global_row = start_row + i;
+        // Вивід повідомлень кожного 500-го глобального рядка
+        if (global_row % 500 == 0) {
+            printf("Process %d: обробка глобального рядка %d\n", rank, global_row);
+        }
+        double imag = imag_max - global_row * (imag_max - imag_min) / (HEIGHT - 1);
+        for (int j = 0; j < WIDTH; j++) {
+            double real = real_min + j * (real_max - real_min) / (WIDTH - 1);
+            double z_real = 0.0, z_imag = 0.0;
+            int iter = 0;
+            while (z_real * z_real + z_imag * z_imag <= 4.0 && iter < MAX_ITER) {
+                double temp = z_real * z_real - z_imag * z_imag + real;
+                z_imag = 2.0 * z_real * z_imag + imag;
+                z_real = temp;
+                iter++;
+            }
+            local_image[i * WIDTH + j] = iter;
+            local_total += iter;
+            if (iter < local_min)
+                local_min = iter;
+            if (iter > local_max)
+                local_max = iter;
+        }
     }
-    printf("Процес %d: локальна сума = %.12f\n", rank, local_sum);
 
-    // Збір локальних сум у процесі 0
-    double total_sum = 0.0;
-    MPI_Reduce(&local_sum, &total_sum, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    double end_time = MPI_Wtime();
+    double local_time = end_time - start_time;
+
+    // Об'єднання локальних статистик із всіх процесів
+    long long global_total;
+    int global_min, global_max;
+    double global_time;
+    MPI_Reduce(&local_total, &global_total, 1, MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&local_min, &global_min, 1, MPI_INT, MPI_MIN, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&local_max, &global_max, 1, MPI_INT, MPI_MAX, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&local_time, &global_time, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+
+    // Вивід кількості оброблених рядків для кожного процесу
+    printf("Process %d обробив %d рядків\n", rank, local_rows);
+
+    // Збір повної матриці (з усіх процесів) на процесі 0
+    int *global_image = NULL;
+    int *recvcounts = NULL;
+    int *displs = NULL;
     if (rank == 0) {
-        double integral = total_sum * step;
-        printf("\nОбчислений інтеграл: %.12f\n", integral);
-        printf("Точне значення інтегралу (π): %.12f\n", M_PI);
+        global_image = malloc(HEIGHT * WIDTH * sizeof(int));
+        recvcounts = malloc(size * sizeof(int));
+        displs = malloc(size * sizeof(int));
+        if (global_image == NULL || recvcounts == NULL || displs == NULL) {
+            fprintf(stderr, "Process 0: помилка виділення пам'яті для збору даних\n");
+            MPI_Abort(MPI_COMM_WORLD, 1);
+        }
+        for (int p = 0; p < size; p++) {
+            int p_rows = (p < remainder) ? (rows_per_proc + 1) : rows_per_proc;
+            recvcounts[p] = p_rows * WIDTH;
+            displs[p] = (p == 0) ? 0 : displs[p - 1] + recvcounts[p - 1];
+        }
     }
 
+    MPI_Gatherv(local_image, local_rows * WIDTH, MPI_INT,
+                global_image, recvcounts, displs, MPI_INT,
+                0, MPI_COMM_WORLD);
+
+    // Процес 0 виводить загальні результати та значення пікселів у кутах/центрі
+    if (rank == 0) {
+        printf("\nMPI: Множество Мандельброта\n");
+        printf("Глобальна контрольна сума (сума ітерацій): %lld\n", global_total);
+        printf("Глобально мінімальна кількість ітерацій: %d\n", global_min);
+        printf("Глобально максимальна кількість ітерацій: %d\n", global_max);
+        printf("Час виконання: %f секунд\n", global_time);
+        // Вивід значень пікселів у кутах та центрі
+        printf("Верхній лівий піксель: %d\n", global_image[0]);
+        printf("Верхній правий піксель: %d\n", global_image[WIDTH - 1]);
+        printf("Нижній лівий піксель: %d\n", global_image[(HEIGHT - 1) * WIDTH]);
+        printf("Нижній правий піксель: %d\n", global_image[HEIGHT * WIDTH - 1]);
+        printf("Центр: %d\n", global_image[(HEIGHT / 2) * WIDTH + (WIDTH / 2)]);
+    }
+
+    free(local_image);
+    if (rank == 0) {
+        free(global_image);
+        free(recvcounts);
+        free(displs);
+    }
     MPI_Finalize();
     return 0;
 }

@@ -1,62 +1,98 @@
+// mandelbrot_openmp.c
 #include <stdio.h>
 #include <stdlib.h>
 #include <omp.h>
 #include <math.h>
 
-// Функція, яку інтегруємо: f(x)=4/(1+x^2)
-double f(double x) {
-    return 4.0 / (1.0 + x * x);
-}
+#define WIDTH 3000
+#define HEIGHT 3000
+#define MAX_ITER 1000
 
-int main() {
-    // Межі інтегрування
-    double a = 0.0, b = 1.0;
-    // Кількість кроків (розбиття інтервалу)
-    long long num_steps = 1000000;
-    double step = (b - a) / num_steps;
-    double total_sum = 0.0;
+int main(void) {
+    int i, j;
+    long long total = 0;       // контрольна сума (сума усіх ітерацій)
+    int global_min = MAX_ITER; // мінімальне число ітерацій
+    int global_max = 0;        // максимальне число ітерацій
+    double start_time, end_time;
 
-    printf("Обчислення інтегралу f(x)=4/(1+x^2) від %.2f до %.2f методом трапецій\n\n", a, b);
+    // Виділення пам'яті для збереження значень ітерацій для кожного пікселя
+    int *image = malloc(WIDTH * HEIGHT * sizeof(int));
+    if (image == NULL) {
+        fprintf(stderr, "Помилка виділення пам'яті!\n");
+        return 1;
+    }
 
-    // Паралельний регіон OpenMP
-#pragma omp parallel
-    {
+    // Параметри області на комплексній площині
+    double real_min = -2.0, real_max = 1.0;
+    double imag_min = -1.5, imag_max = 1.5;
+
+    start_time = omp_get_wtime();
+
+    // Створюємо масив для зберігання кількості рядків, оброблених кожним потоком
+    int max_threads = omp_get_max_threads();
+    int *rows_processed = calloc(max_threads, sizeof(int));
+    if (rows_processed == NULL) {
+        fprintf(stderr, "Помилка виділення пам'яті для rows_processed!\n");
+        free(image);
+        return 1;
+    }
+
+    // Паралельне обчислення множини Мандельброта з логуванням роботи потоків
+#pragma omp parallel for private(j) reduction(+:total) reduction(min:global_min) reduction(max:global_max) schedule(dynamic)
+    for (i = 0; i < HEIGHT; i++) {
         int tid = omp_get_thread_num();
-        int num_threads = omp_get_num_threads();
-        double local_sum = 0.0;
+        rows_processed[tid]++;  // збільшуємо лічильник рядків для поточного потоку
 
-        // Розподіл ітерацій між потоками:
-        // кожен потік обробляє свій підінтервал [i_start, i_end)
-        long long i_start = tid * (num_steps / num_threads);
-        long long i_end = (tid + 1) * (num_steps / num_threads);
-        // Останній потік бере залишок (якщо num_steps не ділиться рівномірно)
-        if (tid == num_threads - 1) {
-            i_end = num_steps;
+        double imag = imag_max - i * (imag_max - imag_min) / (HEIGHT - 1);
+        for (j = 0; j < WIDTH; j++) {
+            double real = real_min + j * (real_max - real_min) / (WIDTH - 1);
+            double z_real = 0.0, z_imag = 0.0;
+            int iter = 0;
+            while (z_real * z_real + z_imag * z_imag <= 4.0 && iter < MAX_ITER) {
+                double temp = z_real * z_real - z_imag * z_imag + real;
+                z_imag = 2.0 * z_real * z_imag + imag;
+                z_real = temp;
+                iter++;
+            }
+            image[i * WIDTH + j] = iter;
+            total += iter;
+            if (iter < global_min)
+                global_min = iter;
+            if (iter > global_max)
+                global_max = iter;
         }
-
-        double local_a = a + i_start * step;
-        double local_b = a + i_end * step;
-
-        printf("Потік %d: обробляє інтервал [%.6f, %.6f], індекси [%lld, %lld)\n",
-               tid, local_a, local_b, i_start, i_end);
-
-        // Обчислення локальної суми
-        // (Тут ми сумуємо значення f(x) для кожного кроку,
-        //  а множення на step виконаємо пізніше)
-        for (long long i = i_start; i < i_end; i++) {
-            double x = a + i * step;
-            local_sum += f(x);
+        // Вивід логування кожного 500-го рядка (щоб не перевантажувати консоль)
+        if (i % 500 == 0) {
+#pragma omp critical
+            {
+                printf("Thread %d: оброблено рядок %d\n", tid, i);
+            }
         }
-        printf("Потік %d: локальна сума = %.12f\n", tid, local_sum);
+    }
 
-        // Додавання локального результату до загальної суми (з синхронізацією)
-#pragma omp atomic
-        total_sum += local_sum;
-    } // завершення паралельного регіону
+    end_time = omp_get_wtime();
 
-    double integral = total_sum * step;
-    printf("\nОбчислений інтеграл: %.12f\n", integral);
-    printf("Точне значення інтегралу (π): %.12f\n", M_PI);
+    // Вивід інформації про роботу кожного потоку
+    for (i = 0; i < max_threads; i++) {
+        printf("Thread %d обробив %d рядків\n", i, rows_processed[i]);
+    }
 
+    // Вивід загальної статистики
+    printf("\nOpenMP: Множина Мандельброта\n");
+    printf("Контрольна сума (сума ітерацій): %lld\n", total);
+    printf("Мінімальна кількість ітерацій: %d\n", global_min);
+    printf("Максимальна кількість ітерацій: %d\n", global_max);
+    printf("Час виконання: %f секунд\n", end_time - start_time);
+
+    // Вивід декількох зразкових значень пікселів
+    printf("Зразкові значення:\n");
+    printf("Верхній лівий піксель: %d\n", image[0]);
+    printf("Верхній правий піксель: %d\n", image[WIDTH - 1]);
+    printf("Нижній лівий піксель: %d\n", image[(HEIGHT - 1) * WIDTH]);
+    printf("Нижній правий піксель: %d\n", image[HEIGHT * WIDTH - 1]);
+    printf("Центр: %d\n", image[(HEIGHT / 2) * WIDTH + (WIDTH / 2)]);
+
+    free(image);
+    free(rows_processed);
     return 0;
 }
