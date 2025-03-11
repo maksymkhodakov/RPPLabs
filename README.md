@@ -17,3 +17,10 @@
 
 ### mpicc mpi.c -o mpi
 ### mpirun -np 4 ./mpi
+
+## На MacOS (на Apple Silicon) в разі помилки компіляції виконати
+# brew reinstall open-mpi
+# export PATH=/opt/homebrew/bin:$PATH
+# which mpicc    
+
+# Директорія Homebrew (/homebrew) є дефолтною для M1/M2 MacOS
