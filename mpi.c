@@ -3,26 +3,52 @@
 #include <math.h>
 #include <mpi.h>
 
-#define WIDTH 3000
-#define HEIGHT 3000
-#define MAX_ITER 1000
-
 int main(int argc, char *argv[]) {
     int rank, size;
-    // Ініціалізація середовища MPI.
-    // Функція MPI_Init ініціалізує MPI, підготовлюючи середовище для розподілених обчислень.
+    int WIDTH, HEIGHT, MAX_ITER;
+    double real_min, real_max, imag_min, imag_max;
+
+    // Ініціалізація MPI-середовища.
+    // Ця функція викликається першою, щоб підготувати MPI до роботи.
     MPI_Init(&argc, &argv);
-    // Отримання унікального ідентифікатора (rank) поточного процесу.
+
+    // Отримання унікального номера (rank) поточного процесу в комунікаторі MPI_COMM_WORLD.
+    // Значення rank від 0 до size-1, де 0 — це "root" або "мастер".
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    // Отримання загальної кількості процесів у комунікаторі.
+
+    // Отримання загальної кількості процесів, що беруть участь у виконанні програми.
+    // Це дозволяє нам динамічно розподілити завдання між процесами.
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
+    // Процес з rank 0 задає вхідні параметри (hardcoded).
+    // Інші процеси отримають ці значення через MPI_Bcast.
+    if (rank == 0) {
+        WIDTH = 3000;
+        HEIGHT = 3000;
+        MAX_ITER = 1000;
+        real_min = -2.0;
+        real_max = 1.0;
+        imag_min = -1.5;
+        imag_max = 1.5;
+    }
+
+    // Розсилка вхідних параметрів від процесу 0 (root) до всіх інших процесів.
+    // MPI_Bcast (broadcast) забезпечує, що всі процеси отримають однакові дані.
+    MPI_Bcast(&WIDTH, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&HEIGHT, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&MAX_ITER, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&real_min, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&real_max, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&imag_min, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&imag_max, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    // Після цих викликів, усі процеси мають однакові значення параметрів.
+
     // Розподіл рядків зображення між процесами.
-    // Загальна кількість рядків HEIGHT ділиться на всі процеси.
+    // Кожен процес отримає певну кількість рядків для обчислення.
     int rows_per_proc = HEIGHT / size;
     int remainder = HEIGHT % size;
     int start_row, end_row;
-    // Якщо ранг процесу менший за залишок, то йому виділяється додатковий рядок.
+    // Якщо rank менший за залишок, процесу виділяється додатковий рядок.
     if (rank < remainder) {
         start_row = rank * (rows_per_proc + 1);
         end_row = start_row + rows_per_proc + 1;
@@ -30,54 +56,50 @@ int main(int argc, char *argv[]) {
         start_row = rank * rows_per_proc + remainder;
         end_row = start_row + rows_per_proc;
     }
-    // Локальна кількість рядків, які обробляє поточний процес.
     int local_rows = end_row - start_row;
 
-    // Виділення пам'яті для локального блоку збереження значень ітерацій для кожного пікселя
+    // Виділення пам'яті для локального блоку зображення.
+    // Кожен процес створює масив, в якому зберігатиме результати обчислень (кількість ітерацій) для своїх рядків.
     int *local_image = malloc(local_rows * WIDTH * sizeof(int));
     if (local_image == NULL) {
-        fprintf(stderr, "Процес %d: помилка виділення пам'яті\n", rank);
-        MPI_Abort(MPI_COMM_WORLD, 1);  // Завершення всіх процесів у разі критичної помилки.
+        fprintf(stderr, "Процес %d: помилка виділення пам'яті для local_image\n", rank);
+        MPI_Abort(MPI_COMM_WORLD, 1); // MPI_Abort припиняє роботу всіх процесів, якщо сталася критична помилка.
     }
 
-    // Локальні змінні для накопичення статистики обчислень:
-    long long local_total = 0;  // сума ітерацій для локального блоку
-    int local_min = MAX_ITER;   // мінімальна кількість ітерацій серед локальних пікселів
-    int local_max = 0;          // максимальна кількість ітерацій серед локальних пікселів
+    // Локальні статистичні змінні для накопичення результатів:
+    // - local_total: сума ітерацій для локального блоку;
+    // - local_min: мінімальна кількість ітерацій серед пікселів локального блоку;
+    // - local_max: максимальна кількість ітерацій.
+    long long local_total = 0;
+    int local_min = MAX_ITER;
+    int local_max = 0;
 
-    // Задаємо параметри області на комплексній площині для множини Мандельброта.
-    double real_min = -2.0, real_max = 1.0;
-    double imag_min = -1.5, imag_max = 1.5;
-
-    // Фіксуємо стартовий час обчислень за допомогою MPI_Wtime,
-    // яка повертає поточний час, що дозволяє виміряти час виконання.
+    // Фіксуємо час початку локальних обчислень.
+    // MPI_Wtime повертає поточний час, що дозволяє нам обчислити час виконання.
     double start_time = MPI_Wtime();
 
-    // Обчислення локального блоку (рядків), що призначені поточному процесу.
+    // Обчислення локального блоку (рядків) множини Мандельброта.
+    // Кожен процес обчислює свій набір пікселів, що відповідають його діапазону рядків.
     for (int i = 0; i < local_rows; i++) {
-        // Обчислення глобального індексу рядка.
         int global_row = start_row + i;
-        // Логування обробки кожного 500-го глобального рядка.
+        // Для кожного 500-го глобального рядка виводимо інформацію про хід обчислень.
         if (global_row % 500 == 0) {
-            printf("Process %d: обробка глобального рядка %d\n", rank, global_row);
+            printf("Процес %d: обробка глобального рядка %d\n", rank, global_row);
         }
-        // Обчислення уявної частини для даного рядка.
         double imag = imag_max - global_row * (imag_max - imag_min) / (HEIGHT - 1);
         for (int j = 0; j < WIDTH; j++) {
-            // Обчислення дійсної частини для даного стовпця.
             double real = real_min + j * (real_max - real_min) / (WIDTH - 1);
             double z_real = 0.0, z_imag = 0.0;
             int iter = 0;
-            // Основний цикл розрахунку множини Мандельброта: обчислення ітерацій до виходу за межі круга радіусом 2.
+            // Основний цикл обчислення для визначення, чи належить точка множині Мандельброта.
             while (z_real * z_real + z_imag * z_imag <= 4.0 && iter < MAX_ITER) {
                 double temp = z_real * z_real - z_imag * z_imag + real;
                 z_imag = 2.0 * z_real * z_imag + imag;
                 z_real = temp;
                 iter++;
             }
-            // Збереження кількості ітерацій для поточного пікселя у локальному масиві.
+            // Збереження результату для пікселя.
             local_image[i * WIDTH + j] = iter;
-            // Оновлення локальних статистичних значень.
             local_total += iter;
             if (iter < local_min)
                 local_min = iter;
@@ -86,57 +108,66 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    // Фіксуємо кінцевий час виконання локальної частини обчислень.
+    // Фіксуємо час завершення обчислень та рахуємо тривалість виконання.
     double end_time = MPI_Wtime();
     double local_time = end_time - start_time;
 
-    // Об'єднання локальних статистик з усіх процесів за допомогою MPI_Reduce.
-    // Редукція виконується на процесі 0 (кореневому процесі).
+    // Збір глобальної статистики за допомогою MPI_Reduce.
+    // MPI_Reduce виконує операцію редукції (сума, мінімум, максимум) над значеннями з усіх процесів.
+    // Результат операції надсилається до процесу, заданого як root (тут 0).
     long long global_total;
     int global_min, global_max;
     double global_time;
-    // MPI_Reduce для суми: обчислюється глобальна контрольна сума.
     MPI_Reduce(&local_total, &global_total, 1, MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
-    // MPI_Reduce для мінімуму: знаходиться глобальне мінімальне значення.
     MPI_Reduce(&local_min, &global_min, 1, MPI_INT, MPI_MIN, 0, MPI_COMM_WORLD);
-    // MPI_Reduce для максимуму: знаходиться глобальне максимальне значення.
     MPI_Reduce(&local_max, &global_max, 1, MPI_INT, MPI_MAX, 0, MPI_COMM_WORLD);
-    // MPI_Reduce для часу: вибирається максимальний час серед усіх процесів.
+    // Для часу обчислень беремо максимальне значення серед усіх процесів,
+    // що дає нам загальний час виконання, оскільки деякі процеси можуть працювати довше.
     MPI_Reduce(&local_time, &global_time, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
 
-    // Вивід кількості оброблених рядків для кожного процесу.
-    printf("Process %d обробив %d рядків\n", rank, local_rows);
-
-    // Збір повної матриці з локальних блоків на процесі 0.
+    // Підготовка до збору глобального зображення.
+    // Процес 0 (root) виділяє пам'ять для отримання результатів з усіх процесів.
+    // Інші процеси також виділяють пам'ять для прийому даних, що будуть розіслані через MPI_Bcast.
     int *global_image = NULL;
-    int *recvcounts = NULL; // масив, що містить кількість елементів, які приймає кожен процес
-    int *displs = NULL;     // масив зсувів для кожного процесу
+    int *recvcounts = NULL;
+    int *displs = NULL;
     if (rank == 0) {
-        // Виділення пам'яті для глобального зображення та допоміжних масивів.
         global_image = malloc(HEIGHT * WIDTH * sizeof(int));
         recvcounts = malloc(size * sizeof(int));
         displs = malloc(size * sizeof(int));
         if (global_image == NULL || recvcounts == NULL || displs == NULL) {
-            fprintf(stderr, "Process 0: помилка виділення пам'яті для збору даних\n");
+            fprintf(stderr, "Процес 0: помилка виділення пам'яті для збору даних\n");
             MPI_Abort(MPI_COMM_WORLD, 1);
         }
-        // Заповнення масивів recvcounts та displs для функції MPI_Gatherv.
+        // Обчислюємо, скільки елементів (пікселів) має приймати кожен процес,
+        // а також зсув (displacement) для кожного процесу в глобальному масиві.
         for (int p = 0; p < size; p++) {
-            // Для процесів, що обробляють додатковий рядок (якщо залишок > 0)
             int p_rows = (p < remainder) ? (rows_per_proc + 1) : rows_per_proc;
-            recvcounts[p] = p_rows * WIDTH;  // кількість елементів, що приймаються від процесу p
-            // Обчислення зсуву для кожного процесу.
+            recvcounts[p] = p_rows * WIDTH;
             displs[p] = (p == 0) ? 0 : displs[p - 1] + recvcounts[p - 1];
+        }
+    } else {
+        // На процесах, що не є root, також виділяємо пам'ять для global_image,
+        // щоб отримати результат розсилки через MPI_Bcast.
+        global_image = malloc(HEIGHT * WIDTH * sizeof(int));
+        if (global_image == NULL) {
+            fprintf(stderr, "Процес %d: помилка виділення пам'яті для global_image\n", rank);
+            MPI_Abort(MPI_COMM_WORLD, 1);
         }
     }
 
-    // Збір локальних масивів (local_image) у глобальний масив (global_image) на процесі 0.
-    // MPI_Gatherv дозволяє збирати дані з різною кількістю елементів з кожного процесу.
+    // Збір локальних результатів у глобальний масив на процесі 0.
+    // MPI_Gatherv дозволяє збирати змінну кількість елементів від кожного процесу.
+    // На non-root процесах send buffer (local_image) надсилається, а на root він приймається і зберігається в global_image.
     MPI_Gatherv(local_image, local_rows * WIDTH, MPI_INT,
                 global_image, recvcounts, displs, MPI_INT,
                 0, MPI_COMM_WORLD);
 
-    // Процес 0 виводить загальні результати та значення пікселів з країв та центру зображення.
+    // Розсилка глобального зображення з процесу 0 всім процесам за допомогою MPI_Bcast.
+    // Після цього всі процеси матимуть повну копію обчисленого зображення.
+    MPI_Bcast(global_image, HEIGHT * WIDTH, MPI_INT, 0, MPI_COMM_WORLD);
+
+    // Лише процес 0 виводить підсумкову інформацію та статистику обчислень.
     if (rank == 0) {
         printf("\nMPI: Множина Мандельброта\n");
         printf("Глобальна контрольна сума (сума ітерацій): %lld\n", global_total);
@@ -153,12 +184,14 @@ int main(int argc, char *argv[]) {
 
     // Звільнення виділеної пам'яті.
     free(local_image);
+    free(global_image);
     if (rank == 0) {
-        free(global_image);
         free(recvcounts);
         free(displs);
     }
-    // Завершення роботи середовища MPI.
+
+    // Завершення роботи MPI-середовища.
+    // Після виклику MPI_Finalize більше не можна використовувати MPI-функції.
     MPI_Finalize();
     return 0;
 }
