@@ -20,6 +20,12 @@ int main(void) {
 
     // Генерація NUM_FRAMES кадрів для динамічної візуалізації
     for (frame = 0; frame < NUM_FRAMES; frame++) {
+        // Обчислення поточного максимуму ітерацій для цього кадру.
+        // Поточна максимальна кількість ітерацій зростає від (MAX_ITER/NUM_FRAMES) до MAX_ITER.
+        int current_max_iter = ((frame + 1) * MAX_ITER) / NUM_FRAMES;
+        if (current_max_iter < 1)
+            current_max_iter = 1;
+
         // Обчислення коефіцієнта збільшення для поточного кадру
         double zoom = pow(zoom_step, frame);
         // Обчислення поточного розміру області (зменшується при збільшенні)
@@ -33,7 +39,7 @@ int main(void) {
 
         // Ініціалізація глобальних змінних для статистики обчислень
         long long total = 0;       // Контрольна сума: сума ітерацій для всіх пікселів
-        int global_min = MAX_ITER; // Змінна для збереження мінімальної кількості ітерацій для пікселя
+        int global_min = current_max_iter; // Початкове значення мінімуму – рівне current_max_iter
         int global_max = 0;        // Змінна для збереження максимальної кількості ітерацій для пікселя
 
         // Виділення пам'яті для збереження значень ітерацій для кожного пікселя
@@ -48,7 +54,7 @@ int main(void) {
 
         // Отримання максимальної кількості потоків, які можуть бути запущені
         int max_threads = omp_get_max_threads();
-        // Виділення пам'яті для масиву, що зберігає кількість оброблених рядків кожним потоком
+        // Виділення пам'яті для масиву, що зберігатиме кількість оброблених рядків кожним потоком
         int *rows_processed = calloc(max_threads, sizeof(int));
         if (rows_processed == NULL) {
             fprintf(stderr, "Помилка виділення пам'яті для rows_processed в кадрі %d!\n", frame);
@@ -78,8 +84,9 @@ int main(void) {
                 double z_real = 0.0, z_imag = 0.0;
                 int iter = 0;
                 // Основний цикл розрахунку ітерацій для пікселя:
-                // Перевіряємо, чи не вийшла точка за межі кола радіусом 2
-                while (z_real * z_real + z_imag * z_imag <= 4.0 && iter < MAX_ITER) {
+                // Перевіряємо, чи не вийшла точка за межі кола радіусом 2,
+                // використовуючи current_max_iter для динамічного заповнення.
+                while (z_real * z_real + z_imag * z_imag <= 4.0 && iter < current_max_iter) {
                     double temp = z_real * z_real - z_imag * z_imag + real_val;
                     z_imag = 2.0 * z_real * z_imag + imag_val;
                     z_real = temp;
@@ -113,7 +120,7 @@ int main(void) {
 
         // Формування імені файлу для поточного кадру (наприклад, frame_0000.ppm, frame_0001.ppm, ...)
         char filename[256];
-        sprintf(filename, "frame_%04d.ppm", frame);
+        sprintf(filename, "OpenMP-frame_%04d.ppm", frame);
 
         // Відкриття файлу для запису зображення у форматі PPM (бінарний режим)
         FILE *fp = fopen(filename, "wb");
@@ -126,12 +133,11 @@ int main(void) {
         fprintf(fp, "P6\n%d %d\n255\n", WIDTH, HEIGHT);
 
         // Перетворення значень ітерацій у відтінки сірого та запис пікселів у файл
+        // NEW: Масштабування значень здійснюється відносно current_max_iter.
         for (i = 0; i < HEIGHT; i++) {
             for (j = 0; j < WIDTH; j++) {
                 int iter = image[i * WIDTH + j];
-                // Масштабування ітерацій до діапазону 0-255
-                unsigned char color = (unsigned char)(255 * iter / MAX_ITER);
-                // Запис значення для трьох каналів (R, G, B)
+                unsigned char color = (unsigned char)(255 * iter / current_max_iter);
                 fwrite(&color, 1, 1, fp);
                 fwrite(&color, 1, 1, fp);
                 fwrite(&color, 1, 1, fp);
@@ -141,7 +147,7 @@ int main(void) {
         fclose(fp);
 
         // Вивід загальної статистики обчислень
-        printf("\nOpenMP: Множина Мандельброта\n");
+        printf("\nOpenMP: Множина Мандельброта (Frame %d)\n", frame);
         printf("Контрольна сума (сума ітерацій): %lld\n", total);
         printf("Мінімальна кількість ітерацій: %d\n", global_min);
         printf("Максимальна кількість ітерацій: %d\n", global_max);
@@ -160,10 +166,10 @@ int main(void) {
     }
 
     // Після генерації всіх кадрів об'єднання їх у анімований GIF за допомогою ImageMagick.
-    // Команда 'convert' бере всі файли frame_*.ppm, встановлює затримку між кадрами (-delay 10)
+    // Команда 'convert' бере всі файли frame_*.ppm, встановлює затримку між кадрами (-delay 20)
     // та нескінченну петлю (-loop 0), створюючи GIF файл animation.gif.
-    system("convert -delay 10 -loop 0 frame_*.ppm animation.gif");
-    printf("Animated GIF generated as animation.gif\n");
+    system("convert -delay 20 -loop 0 OpenMP-frame_*.ppm OpenMP-animation.gif");
+    printf("Animated GIF generated as OpenMP-animation.gif\n");
 
     return 0;
 }
