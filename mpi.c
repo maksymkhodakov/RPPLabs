@@ -235,9 +235,9 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    // NEW: Після генерації всіх кадрів об'єднання їх у анімований GIF за допомогою ImageMagick.
+    // Після генерації всіх кадрів об'єднання їх у анімований GIF за допомогою ImageMagick.
     if (rank == 0) {
-        system("convert -delay 1 -loop 0 MPI-frame_*.ppm MPI-animation.gif");
+        system("convert -delay 20 -loop 0 MPI-frame_*.ppm MPI-animation.gif");
         printf("Animated GIF generated as MPI-animation.gif\n");
     }
 
