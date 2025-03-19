@@ -9,7 +9,7 @@
 
 # Інструкція до OpenMP:  
 
-### export OMP_NUM_THREADS=10
+### export OMP_NUM_THREADS=4
 ### gcc-14 -fopenmp openmp.c -o openmp
 ### ./openmp  
 

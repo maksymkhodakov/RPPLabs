@@ -61,10 +61,6 @@ int main(int argc, char *argv[]) {
     // Виділення пам'яті для локального блоку зображення.
     // Кожен процес створює масив, в якому зберігатиме результати обчислень (кількість ітерацій) для своїх рядків.
     int *local_image = malloc(local_rows * WIDTH * sizeof(int));
-    if (local_image == NULL) {
-        fprintf(stderr, "Процес %d: помилка виділення пам'яті для local_image\n", rank);
-        MPI_Abort(MPI_COMM_WORLD, 1); // MPI_Abort припиняє роботу всіх процесів, якщо сталася критична помилка.
-    }
 
     // Локальні статистичні змінні для накопичення результатів:
     // - local_total: сума ітерацій для локального блоку;
@@ -108,19 +104,22 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    // Фіксуємо час завершення обчислень та рахуємо тривалість виконання.
-    double end_time = MPI_Wtime();
-    double local_time = end_time - start_time;
+
+    long long global_total;
+    int global_min, global_max;
+    double global_time;
 
     // Збір глобальної статистики за допомогою MPI_Reduce.
     // MPI_Reduce виконує операцію редукції (сума, мінімум, максимум) над значеннями з усіх процесів.
     // Результат операції надсилається до процесу, заданого як root (тут 0).
-    long long global_total;
-    int global_min, global_max;
-    double global_time;
     MPI_Reduce(&local_total, &global_total, 1, MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
     MPI_Reduce(&local_min, &global_min, 1, MPI_INT, MPI_MIN, 0, MPI_COMM_WORLD);
     MPI_Reduce(&local_max, &global_max, 1, MPI_INT, MPI_MAX, 0, MPI_COMM_WORLD);
+
+    // Фіксуємо час завершення обчислень разом з кінцем передачі усіх даних на 0 процес
+    double end_time = MPI_Wtime();
+    double local_time = end_time - start_time;
+
     // Для часу обчислень беремо максимальне значення серед усіх процесів,
     // що дає нам загальний час виконання, оскільки деякі процеси можуть працювати довше.
     MPI_Reduce(&local_time, &global_time, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
@@ -135,10 +134,7 @@ int main(int argc, char *argv[]) {
         global_image = malloc(HEIGHT * WIDTH * sizeof(int));
         recvcounts = malloc(size * sizeof(int));
         displs = malloc(size * sizeof(int));
-        if (global_image == NULL || recvcounts == NULL || displs == NULL) {
-            fprintf(stderr, "Процес 0: помилка виділення пам'яті для збору даних\n");
-            MPI_Abort(MPI_COMM_WORLD, 1);
-        }
+
         // Обчислюємо, скільки елементів (пікселів) має приймати кожен процес,
         // а також зсув (displacement) для кожного процесу в глобальному масиві.
         for (int p = 0; p < size; p++) {
@@ -150,10 +146,6 @@ int main(int argc, char *argv[]) {
         // На процесах, що не є root, також виділяємо пам'ять для global_image,
         // щоб отримати результат розсилки через MPI_Bcast.
         global_image = malloc(HEIGHT * WIDTH * sizeof(int));
-        if (global_image == NULL) {
-            fprintf(stderr, "Процес %d: помилка виділення пам'яті для global_image\n", rank);
-            MPI_Abort(MPI_COMM_WORLD, 1);
-        }
     }
 
     // Збір локальних результатів у глобальний масив на процесі 0.
@@ -162,10 +154,6 @@ int main(int argc, char *argv[]) {
     MPI_Gatherv(local_image, local_rows * WIDTH, MPI_INT,
                 global_image, recvcounts, displs, MPI_INT,
                 0, MPI_COMM_WORLD);
-
-    // Розсилка глобального зображення з процесу 0 всім процесам за допомогою MPI_Bcast.
-    // Після цього всі процеси матимуть повну копію обчисленого зображення.
-    MPI_Bcast(global_image, HEIGHT * WIDTH, MPI_INT, 0, MPI_COMM_WORLD);
 
     // Лише процес 0 виводить підсумкову інформацію та статистику обчислень.
     if (rank == 0) {
