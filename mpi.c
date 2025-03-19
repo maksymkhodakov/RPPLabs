@@ -45,16 +45,25 @@ int main(int argc, char *argv[]) {
     MPI_Bcast(&imag_max, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     // Після цих викликів, усі процеси мають однакові значення параметрів.
 
-    // NEW: Додаткові параметри для динамічної візуалізації (zoom‑ефект)
+    // Для динамічного заповнення множини ми будемо поступово збільшувати кількість ітерацій.
+    // Ефект динамічного заповнення досягається шляхом використання поточного максимуму ітерацій,
+    // який у кожному кадрі зростає від малого значення до MAX_ITER.
+
+    // Додаткові параметри для динамічної візуалізації (zoom‑ефект)
     double center_real = -0.5, center_imag = 0.0;  // Центр збільшення
     double initial_width = real_max - real_min;      // Початкова ширина області
     double initial_height = imag_max - imag_min;       // Початкова висота області
     double zoom_step = 1.05;                         // NEW: Крок збільшення для кожного кадру
 
-    // Цикл для генерації NUM_FRAMES кадрів анімації
+    // Цикл для генерації NUM_FRAMES кадрів анімації з динамічним заповненням.
     for (int frame = 0; frame < NUM_FRAMES; frame++) {
 
-        // NEW: Обчислення динамічних параметрів для поточного кадру (zoom‑ефект)
+        // Обчислення поточного максимуму ітерацій для цього кадру.
+        // Поточна максимальна кількість ітерацій зростає від (MAX_ITER/NUM_FRAMES) до MAX_ITER.
+        int current_max_iter = ((frame + 1) * MAX_ITER) / NUM_FRAMES;
+        if (current_max_iter < 1)
+            current_max_iter = 1;
+
         double zoom = pow(zoom_step, frame);
         double current_width = initial_width / zoom;
         double current_height = initial_height / zoom;
@@ -88,7 +97,7 @@ int main(int argc, char *argv[]) {
         // - local_min: мінімальна кількість ітерацій серед пікселів локального блоку;
         // - local_max: максимальна кількість ітерацій.
         long long local_total = 0;
-        int local_min = MAX_ITER;
+        int local_min = current_max_iter;
         int local_max = 0;
 
         // Фіксуємо час початку локальних обчислень.
@@ -101,7 +110,7 @@ int main(int argc, char *argv[]) {
             int global_row = start_row + i;
             // Для кожного 500-го глобального рядка виводимо інформацію про хід обчислень.
             if (global_row % 500 == 0) {
-                printf("Процес %d: обробка глобального рядка %d (Frame %d)\n", rank, global_row, frame);
+                printf("Процес %d: обробка глобального рядка %d (Frame %d, current_max_iter = %d)\n", rank, global_row, frame, current_max_iter);
             }
             double imag_val = imag_max - global_row * (imag_max - imag_min) / (HEIGHT - 1);
             for (int j = 0; j < WIDTH; j++) {
@@ -109,7 +118,8 @@ int main(int argc, char *argv[]) {
                 double z_real = 0.0, z_imag = 0.0;
                 int iter = 0;
                 // Основний цикл обчислення для визначення, чи належить точка множині Мандельброта.
-                while (z_real * z_real + z_imag * z_imag <= 4.0 && iter < MAX_ITER) {
+                // NEW: Використовуємо current_max_iter замість MAX_ITER для динамічного заповнення.
+                while (z_real * z_real + z_imag * z_imag <= 4.0 && iter < current_max_iter) {
                     double temp = z_real * z_real - z_imag * z_imag + real_val;
                     z_imag = 2.0 * z_real * z_imag + imag_val;
                     z_real = temp;
@@ -174,7 +184,7 @@ int main(int argc, char *argv[]) {
 
         // NEW: Запис зображення поточного кадру у форматі PPM (тільки на процесі 0).
         if (rank == 0) {
-            printf("\nMPI: Множина Мандельброта\n");
+            printf("\nMPI: Множина Мандельброта (Frame %d)\n", frame);
             printf("Глобальна контрольна сума (сума ітерацій): %lld\n", global_total);
             printf("Глобально мінімальна кількість ітерацій: %d\n", global_min);
             printf("Глобально максимальна кількість ітерацій: %d\n", global_max);
@@ -203,7 +213,8 @@ int main(int argc, char *argv[]) {
             for (int i = 0; i < HEIGHT; i++) {
                 for (int j = 0; j < WIDTH; j++) {
                     int iter = global_image[i * WIDTH + j];
-                    unsigned char color = (unsigned char)(255 * iter / MAX_ITER);
+                    // Для відображення кадру використовуємо current_max_iter при масштабуванні кольору.
+                    unsigned char color = (unsigned char)(255 * iter / current_max_iter);
                     fwrite(&color, 1, 1, fp);
                     fwrite(&color, 1, 1, fp);
                     fwrite(&color, 1, 1, fp);
@@ -226,7 +237,7 @@ int main(int argc, char *argv[]) {
 
     // NEW: Після генерації всіх кадрів об'єднання їх у анімований GIF за допомогою ImageMagick.
     if (rank == 0) {
-        system("convert -delay 10 -loop 0 MPI-frame_*.ppm MPI-animation.gif");
+        system("convert -delay 1 -loop 0 MPI-frame_*.ppm MPI-animation.gif");
         printf("Animated GIF generated as MPI-animation.gif\n");
     }
 
